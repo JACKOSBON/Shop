@@ -2,7 +2,6 @@ import os
 import asyncio
 import re
 import random
-import time
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, InviteHashInvalidError, InviteHashExpiredError
 from telethon.tl.functions.messages import ImportChatInviteRequest
@@ -22,9 +21,8 @@ WE ARE BACK CARDERS HUB
 JOIN FAST: @carders_hub07
 """
 
-# ─── CONFIG ──────────────────────────────────────────────────
-SPAM_INTERVAL = 300  # 5 minutes (300 seconds)
-MAX_GROUPS = 150     # Max groups to spam
+SPAM_INTERVAL = 300  # 5 minutes
+MAX_GROUPS = 150
 
 # ─── GLOBAL VARIABLES ──────────────────────────────────────
 visited_groups = set()
@@ -32,29 +30,26 @@ pending_links = []
 group_counter = 0
 spam_count = 0
 
-client = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+# ─── CREATE CLIENT INSIDE ASYNC MAIN ──────────────────────
+# Don't create client at global scope!
+client = None
 
 # ─── COMMAND: /start ──────────────────────────────────────
-@client.on(events.NewMessage(pattern='/start'))
-async def start(event):
+async def start_cmd(event):
     await event.reply(
         "🤖 **Timed Spam Bot Active!**\n\n"
         "📤 Sends spam every 5 minutes to joined groups.\n\n"
         "Commands:\n"
         "/join <link> - Join & spam a group\n"
-        "/join <link1> <link2> - Join multiple groups\n"
         "/add <link> - Add link to queue\n"
         "/status - Check bot status\n"
-        "/stopspam - Stop auto-spam\n"
-        "/startspam - Start auto-spam\n"
         "/help - Show this message\n\n"
         "Example: `/join https://t.me/carders_hub07`"
     )
 
 # ─── COMMAND: /join ──────────────────────────────────────
-@client.on(events.NewMessage(pattern='/join'))
-async def join_command(event):
-    global pending_links, group_counter
+async def join_cmd(event):
+    global pending_links
     text = event.raw_text
     links = re.findall(r'(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:joinchat/|\+)?[\w\-_]+', text)
     
@@ -62,25 +57,16 @@ async def join_command(event):
         await event.reply("❌ No valid link found.\nUsage: `/join https://t.me/group`")
         return
     
-    await event.reply(f"🔄 Processing {len(links)} link(s)...")
-    
-    results = []
+    added = []
     for link in links:
-        if link in visited_groups:
-            results.append(f"⏩ Already joined: {link}")
-            continue
-        if link in pending_links:
-            results.append(f"⏳ Already in queue: {link}")
-            continue
-        
-        pending_links.append(link)
-        results.append(f"📌 Added to queue: {link}")
+        if link not in pending_links and link not in visited_groups:
+            pending_links.append(link)
+            added.append(link)
     
-    await event.reply("\n".join(results))
+    await event.reply(f"✅ Added {len(added)} link(s) to queue:\n" + "\n".join(added[:5]))
 
 # ─── COMMAND: /add ──────────────────────────────────────
-@client.on(events.NewMessage(pattern='/add'))
-async def add_command(event):
+async def add_cmd(event):
     global pending_links
     text = event.raw_text
     links = re.findall(r'(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:joinchat/|\+)?[\w\-_]+', text)
@@ -98,8 +84,7 @@ async def add_command(event):
     await event.reply(f"✅ Added {len(added)} link(s) to queue.")
 
 # ─── COMMAND: /status ──────────────────────────────────────
-@client.on(events.NewMessage(pattern='/status'))
-async def status(event):
+async def status_cmd(event):
     await event.reply(
         f"📊 **Bot Status**\n\n"
         f"📌 Queue: {len(pending_links)} links\n"
@@ -109,7 +94,6 @@ async def status(event):
     )
 
 # ─── COMMAND: /help ──────────────────────────────────────
-@client.on(events.NewMessage(pattern='/help'))
 async def help_cmd(event):
     await event.reply(
         "📖 **Commands:**\n\n"
@@ -117,20 +101,17 @@ async def help_cmd(event):
         "/join <link> - Join group & add to spam list\n"
         "/add <link> - Add link to queue\n"
         "/status - Check bot status\n"
-        "/stopspam - Stop auto-spam\n"
-        "/startspam - Start auto-spam\n"
         "/help - Show this message\n\n"
         "Example: `/join https://t.me/carders_hub07`"
     )
 
 # ─── AUTO-SPAM FUNCTION ──────────────────────────────────
 async def auto_spam():
-    global group_counter, spam_count
+    global client, spam_count
     print("⏳ Auto-spam thread started...")
     
     while True:
         try:
-            # Get all groups where bot is member
             dialogs = await client.get_dialogs()
             groups = [d for d in dialogs if d.is_group or d.is_channel]
             
@@ -139,16 +120,14 @@ async def auto_spam():
                 await asyncio.sleep(SPAM_INTERVAL)
                 continue
             
-            # Shuffle groups to avoid pattern
             random.shuffle(groups)
             
-            # Send spam to each group
-            for dialog in groups[:50]:  # Limit to 50 per cycle
+            for dialog in groups[:50]:
                 try:
                     await client.send_message(dialog.entity, SPAM_MESSAGE)
                     spam_count += 1
                     print(f"📤 Spam #{spam_count} sent to: {dialog.title or dialog.id}")
-                    await asyncio.sleep(random.uniform(5, 15))  # Delay between groups
+                    await asyncio.sleep(random.uniform(5, 15))
                 except FloodWaitError as e:
                     print(f"⏳ Flood wait: {e.seconds}s")
                     await asyncio.sleep(e.seconds + 5)
@@ -164,7 +143,7 @@ async def auto_spam():
 
 # ─── AUTO-JOIN QUEUE PROCESSOR ──────────────────────────
 async def join_processor():
-    global pending_links, visited_groups, group_counter
+    global client, pending_links, visited_groups, group_counter
     print("🔄 Join processor started...")
     
     while True:
@@ -188,9 +167,9 @@ async def join_processor():
                 group_counter += 1
                 print(f"✅ Joined: {link} (Total: {group_counter})")
                 
-                # Send welcome spam immediately
                 entity = await client.get_entity(link)
                 await client.send_message(entity, SPAM_MESSAGE)
+                global spam_count
                 spam_count += 1
                 print(f"📤 First spam sent to new group")
                 
@@ -207,9 +186,16 @@ async def join_processor():
 
 # ─── MAIN ──────────────────────────────────────────────────
 async def main():
+    global client
+    
     print("🚀 Timed Spam Bot Starting...")
     print(f"📝 Message: {SPAM_MESSAGE[:50]}...")
     print(f"⏱️ Interval: {SPAM_INTERVAL} seconds")
+    
+    # Create client INSIDE async main
+    client = TelegramClient('bot_session', API_ID, API_HASH)
+    await client.start(bot_token=BOT_TOKEN)
+    print("✅ Bot logged in!")
     
     # Load manual links from file
     if os.path.exists("links.txt"):
@@ -220,11 +206,18 @@ async def main():
                     pending_links.append(link)
                     print(f"📌 Loaded from file: {link}")
     
+    # Register handlers
+    client.add_event_handler(start_cmd, events.NewMessage(pattern='/start'))
+    client.add_event_handler(join_cmd, events.NewMessage(pattern='/join'))
+    client.add_event_handler(add_cmd, events.NewMessage(pattern='/add'))
+    client.add_event_handler(status_cmd, events.NewMessage(pattern='/status'))
+    client.add_event_handler(help_cmd, events.NewMessage(pattern='/help'))
+    
     # Start background tasks
     asyncio.create_task(auto_spam())
     asyncio.create_task(join_processor())
     
-    # Start bot
+    print("🤖 Bot is ready! Send /start on Telegram.")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
