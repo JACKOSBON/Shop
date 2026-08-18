@@ -29,9 +29,8 @@ visited_groups = set()
 pending_links = []
 group_counter = 0
 spam_count = 0
+spam_running = True  # Flag to control spam
 
-# ─── CREATE CLIENT INSIDE ASYNC MAIN ──────────────────────
-# Don't create client at global scope!
 client = None
 
 # ─── COMMAND: /start ──────────────────────────────────────
@@ -43,6 +42,8 @@ async def start_cmd(event):
         "/join <link> - Join & spam a group\n"
         "/add <link> - Add link to queue\n"
         "/status - Check bot status\n"
+        "/startspam - Start auto-spam\n"
+        "/stopspam - Stop auto-spam\n"
         "/help - Show this message\n\n"
         "Example: `/join https://t.me/carders_hub07`"
     )
@@ -63,7 +64,7 @@ async def join_cmd(event):
             pending_links.append(link)
             added.append(link)
     
-    await event.reply(f"✅ Added {len(added)} link(s) to queue:\n" + "\n".join(added[:5]))
+    await event.reply(f"✅ Added {len(added)} link(s) to queue.")
 
 # ─── COMMAND: /add ──────────────────────────────────────
 async def add_cmd(event):
@@ -85,13 +86,28 @@ async def add_cmd(event):
 
 # ─── COMMAND: /status ──────────────────────────────────────
 async def status_cmd(event):
+    global group_counter, spam_count, pending_links, spam_running
     await event.reply(
         f"📊 **Bot Status**\n\n"
         f"📌 Queue: {len(pending_links)} links\n"
         f"✅ Joined: {group_counter} groups\n"
-        f"📤 Spam sent: {spam_count} times\n"
-        f"⏱️ Interval: {SPAM_INTERVAL} seconds"
+        f"📤 Total spam sent: {spam_count} times\n"
+        f"⏱️ Interval: {SPAM_INTERVAL} seconds\n"
+        f"🔄 Spam: {'🟢 Running' if spam_running else '🔴 Stopped'}\n"
+        f"📝 Message: {SPAM_MESSAGE[:40]}..."
     )
+
+# ─── COMMAND: /startspam ──────────────────────────────────
+async def start_spam_cmd(event):
+    global spam_running
+    spam_running = True
+    await event.reply("✅ **Auto-spam started!** Bot will send messages every 5 minutes.")
+
+# ─── COMMAND: /stopspam ──────────────────────────────────
+async def stop_spam_cmd(event):
+    global spam_running
+    spam_running = False
+    await event.reply("⏸️ **Auto-spam stopped!** Use `/startspam` to resume.")
 
 # ─── COMMAND: /help ──────────────────────────────────────
 async def help_cmd(event):
@@ -101,49 +117,57 @@ async def help_cmd(event):
         "/join <link> - Join group & add to spam list\n"
         "/add <link> - Add link to queue\n"
         "/status - Check bot status\n"
+        "/startspam - Start auto-spam\n"
+        "/stopspam - Stop auto-spam\n"
         "/help - Show this message\n\n"
         "Example: `/join https://t.me/carders_hub07`"
     )
 
 # ─── AUTO-SPAM FUNCTION ──────────────────────────────────
 async def auto_spam():
-    global client, spam_count
+    global client, spam_count, spam_running
     print("⏳ Auto-spam thread started...")
     
     while True:
-        try:
-            dialogs = await client.get_dialogs()
-            groups = [d for d in dialogs if d.is_group or d.is_channel]
-            
-            if not groups:
-                print("⚠️ No groups found. Add some using /join")
+        if spam_running:
+            try:
+                dialogs = await client.get_dialogs()
+                groups = [d for d in dialogs if d.is_group or d.is_channel]
+                
+                if not groups:
+                    print("⚠️ No groups found. Add some using /join")
+                    await asyncio.sleep(SPAM_INTERVAL)
+                    continue
+                
+                random.shuffle(groups)
+                sent_this_cycle = 0
+                
+                for dialog in groups[:50]:
+                    try:
+                        await client.send_message(dialog.entity, SPAM_MESSAGE)
+                        spam_count += 1
+                        sent_this_cycle += 1
+                        print(f"📤 Spam #{spam_count} sent to: {dialog.title or dialog.id}")
+                        await asyncio.sleep(random.uniform(5, 15))
+                    except FloodWaitError as e:
+                        print(f"⏳ Flood wait: {e.seconds}s")
+                        await asyncio.sleep(e.seconds + 5)
+                    except Exception as e:
+                        print(f"❌ Send failed: {e}")
+                
+                print(f"✅ Spam cycle complete. Sent to {sent_this_cycle} groups. Next in {SPAM_INTERVAL}s")
                 await asyncio.sleep(SPAM_INTERVAL)
-                continue
-            
-            random.shuffle(groups)
-            
-            for dialog in groups[:50]:
-                try:
-                    await client.send_message(dialog.entity, SPAM_MESSAGE)
-                    spam_count += 1
-                    print(f"📤 Spam #{spam_count} sent to: {dialog.title or dialog.id}")
-                    await asyncio.sleep(random.uniform(5, 15))
-                except FloodWaitError as e:
-                    print(f"⏳ Flood wait: {e.seconds}s")
-                    await asyncio.sleep(e.seconds + 5)
-                except Exception as e:
-                    print(f"❌ Send failed: {e}")
-            
-            print(f"✅ Spam cycle complete. Next in {SPAM_INTERVAL}s")
-            await asyncio.sleep(SPAM_INTERVAL)
-            
-        except Exception as e:
-            print(f"⚠️ Auto-spam error: {e}")
-            await asyncio.sleep(SPAM_INTERVAL)
+                
+            except Exception as e:
+                print(f"⚠️ Auto-spam error: {e}")
+                await asyncio.sleep(SPAM_INTERVAL)
+        else:
+            print("⏸️ Spam paused. Waiting...")
+            await asyncio.sleep(10)
 
 # ─── AUTO-JOIN QUEUE PROCESSOR ──────────────────────────
 async def join_processor():
-    global client, pending_links, visited_groups, group_counter
+    global client, pending_links, visited_groups, group_counter, spam_count
     print("🔄 Join processor started...")
     
     while True:
@@ -167,9 +191,9 @@ async def join_processor():
                 group_counter += 1
                 print(f"✅ Joined: {link} (Total: {group_counter})")
                 
+                # Send welcome spam
                 entity = await client.get_entity(link)
                 await client.send_message(entity, SPAM_MESSAGE)
-                global spam_count
                 spam_count += 1
                 print(f"📤 First spam sent to new group")
                 
@@ -186,7 +210,7 @@ async def join_processor():
 
 # ─── MAIN ──────────────────────────────────────────────────
 async def main():
-    global client
+    global client, pending_links
     
     print("🚀 Timed Spam Bot Starting...")
     print(f"📝 Message: {SPAM_MESSAGE[:50]}...")
@@ -211,6 +235,8 @@ async def main():
     client.add_event_handler(join_cmd, events.NewMessage(pattern='/join'))
     client.add_event_handler(add_cmd, events.NewMessage(pattern='/add'))
     client.add_event_handler(status_cmd, events.NewMessage(pattern='/status'))
+    client.add_event_handler(start_spam_cmd, events.NewMessage(pattern='/startspam'))
+    client.add_event_handler(stop_spam_cmd, events.NewMessage(pattern='/stopspam'))
     client.add_event_handler(help_cmd, events.NewMessage(pattern='/help'))
     
     # Start background tasks
